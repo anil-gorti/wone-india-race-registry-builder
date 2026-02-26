@@ -6,6 +6,9 @@ Scrapes race history from Indian endurance sports timing platforms.
 Supported:
   - SportTimingSolutions (sportstimingsolutions.in)
   - iFinish (ifinish.in)
+  - MySamay (mysamay.in)
+  - TimingIndia (timingindia.com → results hosted on ifinish.in)
+  - MyRaceIndia (myraceindia.com)
 
 Usage:
   # Step 1: Install deps
@@ -20,6 +23,9 @@ Usage:
 
   # Fallback: full Playwright DOM scrape if API is locked down
   python scrapers/race_registry_scraper.py --mode=playwright --years=2017-2025
+
+  # Scrape a single site only
+  python scrapers/race_registry_scraper.py --mode=direct --site=mysamay
 
   # Dedup combined output
   python scrapers/race_registry_scraper.py --dedup
@@ -61,6 +67,38 @@ STS_YEAR_PARAM       = "year" # query param name for year filter
 IFINISH_EVENTS_API   = None   # e.g. "https://ifinish.in/api/v1/events"
 IFINISH_AUTH_HEADER  = None
 IFINISH_YEAR_PARAM   = "year"
+
+# MySamay (mysamay.in) — SPA; fill after running --discover
+MYSAMAY_EVENTS_API   = None   # e.g. "https://mysamay.in/api/events"
+MYSAMAY_AUTH_HEADER  = None
+MYSAMAY_YEAR_PARAM   = "year"
+
+# TimingIndia (timingindia.com) — results are hosted on ifinish.in
+# Known URL pattern: https://ifinish.in/eventresult/result-{EventName}-{Year}
+# Fill TIMINGINDIA_EVENTS_API after --discover, or use playwright mode
+# to enumerate results via known ifinish.in event slugs.
+TIMINGINDIA_EVENTS_API  = None  # e.g. "https://ifinish.in/api/v1/events?organizer=timingindia"
+TIMINGINDIA_AUTH_HEADER = None
+TIMINGINDIA_YEAR_PARAM  = "year"
+# Known TimingIndia event slugs on ifinish.in (add more as discovered):
+TIMINGINDIA_KNOWN_SLUGS = [
+    "NMDC-Marathon",
+    "Hyderabad-Half-Marathon",
+    "Telangana-Marathon",
+    "SKF-Goa-River-Marathon",
+    "Sandhya-Vizag-River-Marathon",
+    "GMR-Airport-Run",
+    "Tuffman",
+    "Herculean-Triathlon",
+    "Hyderabad-Triathlon",
+    "Ironman-Goa",
+    "Whitathon-Vijayawada",
+]
+
+# MyRaceIndia (myraceindia.com) — SPA; fill after running --discover
+MYRACEINDIA_EVENTS_API  = None  # e.g. "https://www.myraceindia.com/api/events"
+MYRACEINDIA_AUTH_HEADER = None
+MYRACEINDIA_YEAR_PARAM  = "year"
 # ─────────────────────────────────────────────────────────────────────────────
 
 DEFAULT_YEARS = list(range(2017, 2026))
@@ -81,6 +119,37 @@ SITE_CONFIGS = {
             "https://ifinish.in",
         ],
         "api_url_var": "IFINISH_EVENTS_API",
+    },
+    "MySamay": {
+        "label": "MySamay",
+        "discover_urls": [
+            "https://mysamay.in",
+            "https://mysamay.in/results",
+            "https://mysamay.in/events",
+        ],
+        "api_url_var": "MYSAMAY_EVENTS_API",
+    },
+    "TimingIndia": {
+        "label": "TimingIndia",
+        # TimingIndia's results live on ifinish.in — discover by loading
+        # known result pages and intercepting the underlying API calls.
+        "discover_urls": [
+            "https://www.timingindia.com",
+            "https://ifinish.in/eventresult",
+        ] + [
+            f"https://ifinish.in/eventresult/result-{slug}-2024"
+            for slug in TIMINGINDIA_KNOWN_SLUGS[:3]  # sample 3 to find the API shape
+        ],
+        "api_url_var": "TIMINGINDIA_EVENTS_API",
+    },
+    "MyRaceIndia": {
+        "label": "MyRaceIndia",
+        "discover_urls": [
+            "https://www.myraceindia.com",
+            "https://www.myraceindia.com/results",
+            "https://www.myraceindia.com/events",
+        ],
+        "api_url_var": "MYRACEINDIA_EVENTS_API",
     },
 }
 
@@ -463,6 +532,58 @@ def export_csv(events: list, filename: str):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# TIMINGINDIA SLUG ENUMERATOR
+# TimingIndia's results live at ifinish.in/eventresult/result-{Slug}-{Year}.
+# This helper tries every known slug × year and returns synthetic event records.
+# Use this as a fallback when TIMINGINDIA_EVENTS_API is not available.
+# ══════════════════════════════════════════════════════════════════════════════
+
+def fetch_timingindia_via_slugs(years: list) -> list:
+    """
+    Enumerate TimingIndia events by probing known ifinish.in result URLs.
+
+    For each slug in TIMINGINDIA_KNOWN_SLUGS and each year in years,
+    constructs the expected URL and checks if it returns a 200.
+    Successful hits are recorded as event stubs (name + year + source_url).
+
+    No API call needed — relies solely on HTTP HEAD requests.
+    """
+    if requests is None:
+        print("ERROR: requests not installed.")
+        return []
+
+    found = []
+    base = "https://ifinish.in/eventresult/result"
+    headers = {"User-Agent": "Mozilla/5.0 (compatible; WONE-registry-bot/1.0)"}
+
+    print(f"  [TimingIndia] Probing {len(TIMINGINDIA_KNOWN_SLUGS)} slugs × {len(years)} years...")
+    for slug in TIMINGINDIA_KNOWN_SLUGS:
+        for year in years:
+            url = f"{base}-{slug}-{year}"
+            try:
+                resp = requests.head(url, headers=headers, timeout=8, allow_redirects=True)
+                if resp.status_code == 200:
+                    # Derive a human-readable name from slug
+                    name = slug.replace("-", " ")
+                    found.append({
+                        "race_name":        name,
+                        "race_date":        str(year),
+                        "city":             "",
+                        "distances":        "",
+                        "participant_count": "",
+                        "event_id":         slug,
+                        "timing_company":   "TimingIndia",
+                        "source_url":       url,
+                    })
+                    print(f"    ✓ {name} {year}")
+            except Exception as e:
+                pass  # Slug/year combo doesn't exist — expected
+
+    print(f"  [TimingIndia] Found {len(found)} events via slug enumeration")
+    return found
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # MAIN
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -500,10 +621,17 @@ Examples:
         default="2017-2025",
         help="Year range (e.g. 2017-2025) or single year (e.g. 2024)"
     )
+    parser.add_argument(
+        "--site",
+        type=str,
+        default=None,
+        help="Scrape a single site only: sts | ifinish | mysamay | timingindia | myraceindia"
+    )
     args = parser.parse_args()
 
     # Determine mode
     mode = "discover" if args.discover else args.mode
+    site_filter = args.site.lower() if args.site else None
 
     # Parse year range
     if "-" in args.years:
@@ -539,47 +667,103 @@ Examples:
 
     # ── Direct mode ────────────────────────────────────────────────────────
     if mode == "direct":
-        all_sts, all_ifinish = [], []
+        all_events_by_site = {}
 
-        if STS_EVENTS_API:
-            print("Fetching STS events (direct API)...")
-            all_sts = fetch_direct(
-                STS_EVENTS_API, STS_YEAR_PARAM, years,
-                auth_header=STS_AUTH_HEADER, source="STS"
-            )
-        else:
-            print("STS_EVENTS_API is not set.")
-            print("Run --discover first, then fill in the constant at top of this file.\n")
+        # Helper: run a site if not filtered out
+        def _should_run(key):
+            return site_filter is None or site_filter == key.lower()
 
-        if IFINISH_EVENTS_API:
-            print("\nFetching iFinish events (direct API)...")
-            all_ifinish = fetch_direct(
-                IFINISH_EVENTS_API, IFINISH_YEAR_PARAM, years,
-                auth_header=IFINISH_AUTH_HEADER, source="iFinish"
-            )
-        else:
-            print("IFINISH_EVENTS_API is not set.")
-            print("Run --discover first, then fill in the constant at top of this file.\n")
+        if _should_run("sts"):
+            if STS_EVENTS_API:
+                print("Fetching STS events (direct API)...")
+                all_events_by_site["STS"] = fetch_direct(
+                    STS_EVENTS_API, STS_YEAR_PARAM, years,
+                    auth_header=STS_AUTH_HEADER, source="STS"
+                )
+            else:
+                print("STS_EVENTS_API not set — run --discover first.\n")
+                all_events_by_site["STS"] = []
 
-        export_csv(all_sts, "race_registry_sts.csv")
-        export_csv(all_ifinish, "race_registry_ifinish.csv")
-        export_csv(all_sts + all_ifinish, "race_registry_combined.csv")
+        if _should_run("ifinish"):
+            if IFINISH_EVENTS_API:
+                print("\nFetching iFinish events (direct API)...")
+                all_events_by_site["iFinish"] = fetch_direct(
+                    IFINISH_EVENTS_API, IFINISH_YEAR_PARAM, years,
+                    auth_header=IFINISH_AUTH_HEADER, source="iFinish"
+                )
+            else:
+                print("IFINISH_EVENTS_API not set — run --discover first.\n")
+                all_events_by_site["iFinish"] = []
+
+        if _should_run("mysamay"):
+            if MYSAMAY_EVENTS_API:
+                print("\nFetching MySamay events (direct API)...")
+                all_events_by_site["MySamay"] = fetch_direct(
+                    MYSAMAY_EVENTS_API, MYSAMAY_YEAR_PARAM, years,
+                    auth_header=MYSAMAY_AUTH_HEADER, source="MySamay"
+                )
+            else:
+                print("MYSAMAY_EVENTS_API not set — run --discover first.\n")
+                all_events_by_site["MySamay"] = []
+
+        if _should_run("timingindia"):
+            if TIMINGINDIA_EVENTS_API:
+                print("\nFetching TimingIndia events (direct API via ifinish.in)...")
+                all_events_by_site["TimingIndia"] = fetch_direct(
+                    TIMINGINDIA_EVENTS_API, TIMINGINDIA_YEAR_PARAM, years,
+                    auth_header=TIMINGINDIA_AUTH_HEADER, source="TimingIndia"
+                )
+            else:
+                print("\nTIMINGINDIA_EVENTS_API not set.")
+                print("Falling back to slug enumeration via ifinish.in result URLs...")
+                all_events_by_site["TimingIndia"] = fetch_timingindia_via_slugs(years)
+
+        if _should_run("myraceindia"):
+            if MYRACEINDIA_EVENTS_API:
+                print("\nFetching MyRaceIndia events (direct API)...")
+                all_events_by_site["MyRaceIndia"] = fetch_direct(
+                    MYRACEINDIA_EVENTS_API, MYRACEINDIA_YEAR_PARAM, years,
+                    auth_header=MYRACEINDIA_AUTH_HEADER, source="MyRaceIndia"
+                )
+            else:
+                print("MYRACEINDIA_EVENTS_API not set — run --discover first.\n")
+                all_events_by_site["MyRaceIndia"] = []
+
+        # Export per-site CSVs and combined
+        all_combined = []
+        for site_key, events in all_events_by_site.items():
+            slug = site_key.lower().replace(" ", "_")
+            export_csv(events, f"race_registry_{slug}.csv")
+            all_combined.extend(events)
+
+        if all_combined:
+            export_csv(all_combined, "race_registry_combined.csv")
 
     # ── Playwright mode ────────────────────────────────────────────────────
     elif mode == "playwright":
-        sts_events = await scrape_playwright(
-            "STS",
-            SITE_CONFIGS["STS"]["discover_urls"],
-            years
-        )
-        ifinish_events = await scrape_playwright(
-            "iFinish",
-            SITE_CONFIGS["iFinish"]["discover_urls"],
-            years
-        )
-        export_csv(sts_events, "race_registry_sts.csv")
-        export_csv(ifinish_events, "race_registry_ifinish.csv")
-        export_csv(sts_events + ifinish_events, "race_registry_combined.csv")
+        def _should_run(key):
+            return site_filter is None or site_filter == key.lower()
+
+        all_combined = []
+
+        sites_to_scrape = [
+            ("STS",         SITE_CONFIGS["STS"]["discover_urls"]),
+            ("iFinish",     SITE_CONFIGS["iFinish"]["discover_urls"]),
+            ("MySamay",     SITE_CONFIGS["MySamay"]["discover_urls"]),
+            ("TimingIndia", SITE_CONFIGS["TimingIndia"]["discover_urls"]),
+            ("MyRaceIndia", SITE_CONFIGS["MyRaceIndia"]["discover_urls"]),
+        ]
+
+        for site_key, urls in sites_to_scrape:
+            if not _should_run(site_key):
+                continue
+            events = await scrape_playwright(site_key, urls, years)
+            slug = site_key.lower().replace(" ", "_")
+            export_csv(events, f"race_registry_{slug}.csv")
+            all_combined.extend(events)
+
+        if all_combined:
+            export_csv(all_combined, "race_registry_combined.csv")
 
     print("\nDone.")
 
