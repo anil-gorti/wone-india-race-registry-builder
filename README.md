@@ -11,10 +11,13 @@ Scrapes race history (2017-present) from Indian timing companies to build a cano
 - Source timing company
 
 **Supported timing platforms:**
-| Platform | URL | Architecture |
-|---|---|---|
-| SportTimingSolutions | sportstimingsolutions.in | Vue.js SPA |
-| iFinish | ifinish.in | React SPA |
+| Platform | URL | Architecture | Status |
+|---|---|---|---|
+| SportTimingSolutions | sportstimingsolutions.in | Vue.js SPA | API discovery required |
+| iFinish | ifinish.in | React SPA | API discovery required |
+| MySamay | mysamay.in | SPA (Bootstrap) | API discovery required |
+| TimingIndia | timingindia.com | Static site → results on ifinish.in | Slug enumeration built-in |
+| MyRaceIndia | myraceindia.com | SPA (JS-rendered) | API discovery required |
 
 The registry feeds WONE's athlete profile engine — enabling retroactive verification of race results, club participation pattern discovery, and race organizer relationship mapping.
 
@@ -50,7 +53,7 @@ wone-race-registry/
 ├── requirements.txt
 ├── .gitignore
 ├── scrapers/
-│   ├── race_registry_scraper.py     # Main scraper (STS + iFinish)
+│   ├── race_registry_scraper.py     # Main scraper (all 5 platforms)
 │   └── normalizer.py                # Event record normalization utilities
 ├── docs/
 │   ├── api_discovery_guide.md       # How to find API endpoints via DevTools
@@ -61,6 +64,9 @@ wone-race-registry/
 └── output/                          # Generated CSVs (gitignored)
     ├── race_registry_sts.csv
     ├── race_registry_ifinish.csv
+    ├── race_registry_mysamay.csv
+    ├── race_registry_timingindia.csv
+    ├── race_registry_myraceindia.csv
     └── race_registry_combined.csv
 ```
 
@@ -79,9 +85,14 @@ python scrapers/race_registry_scraper.py --discover
 Calls the API directly for each year. No browser overhead. 2017-2025 runs in under 2 minutes.
 
 ```bash
-# After filling in STS_EVENTS_API and IFINISH_EVENTS_API in the scraper:
+# After filling in API URL constants in the scraper:
 python scrapers/race_registry_scraper.py --mode=direct --years=2017-2025
+
+# Run a single platform only:
+python scrapers/race_registry_scraper.py --mode=direct --site=timingindia --years=2017-2025
 ```
+
+> **TimingIndia** works out of the box with no API setup — it enumerates known event slugs directly on ifinish.in.
 
 ### `--mode=playwright` (fallback)
 Full browser scrape for sites where the API is authenticated or obfuscated. Slower but resilient.
@@ -110,12 +121,14 @@ Each row in the output CSV:
 
 ## Adding More Timing Platforms
 
-To add another Indian timing company (MySamay, TimingIndia, etc.):
+To add another Indian timing company, follow the pattern in `docs/site_map.md`:
 
-1. Add a new section in `scrapers/race_registry_scraper.py` following the STS pattern
-2. Run `--discover` on the new site
-3. Add normalization handling in `scrapers/normalizer.py` if the response shape is unusual
-4. Document the site architecture in `docs/site_map.md`
+1. Add `PLATFORM_EVENTS_API`, `PLATFORM_AUTH_HEADER`, `PLATFORM_YEAR_PARAM` constants in the scraper
+2. Add an entry to `SITE_CONFIGS` with `discover_urls`
+3. Wire it into the direct and playwright modes (follow the MySamay/MyRaceIndia blocks)
+4. Run `--discover` on the new site to find the API endpoint
+5. Add normalization key fallbacks in `scrapers/normalizer.py` if needed
+6. Document the architecture in `docs/site_map.md`
 
 ---
 
