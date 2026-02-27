@@ -1,4 +1,4 @@
-# WONE Race Registry Scraper
+# WONE — India Race Registry Builder
 
 Builds a historical race registry from India's endurance sports timing platforms.
 Part of the [WONE](https://wone.in) coordination infrastructure for the Indian endurance sports ecosystem.
