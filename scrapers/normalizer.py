@@ -1,10 +1,10 @@
 """
 normalizer.py
 =============
-Standalone event normalization utilities for the WONE race registry.
+Standalone event normalization utilities for the India race registry.
 
 Extracted from race_registry_scraper.py so it can be imported by
-other WONE pipeline components (profile engine, dedup, etc.)
+other scraper or pipeline components.
 """
 
 from typing import Any
@@ -25,7 +25,7 @@ SCHEMA = {
 
 def normalize_events(raw: Any, source: str, source_url: str) -> list[dict]:
     """
-    Normalize any timing platform API response into standard WONE event records.
+        Normalize any timing platform API response into standard event records.
 
     Handles:
       - List at root:             [{"name": ...}, ...]
