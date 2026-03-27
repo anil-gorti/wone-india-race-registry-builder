@@ -1,5 +1,5 @@
 """
-WONE Race Registry Builder
+India Race Registry — Scraper
 ===========================
 Scrapes race history from Indian endurance sports timing platforms.
 
